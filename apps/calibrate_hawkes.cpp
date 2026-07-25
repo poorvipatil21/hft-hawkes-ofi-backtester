@@ -148,6 +148,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // CRITICAL: for real data, HawkesEvent.t is the raw tape timestamp, which
+    // for live-captured data is a Unix epoch nanosecond value (~1.78e18,
+    // i.e. ~56 years) -- NOT elapsed time within the observation window
+    // (~1e12-1e13 ns for an hours-long capture). Using it directly as T
+    // inflates the compensator's mu_i*T term by a factor of ~10^5-10^6,
+    // which was the actual root cause of mu collapsing to physically
+    // meaningless near-identical values across marks in every real-data run
+    // so far -- something this project spent real effort chasing as a
+    // "mu/slow-kernel identifiability" issue before finding this. Shifting
+    // all event times so the first observed event is at t=0 fixes this:
+    // T then correctly represents the elapsed observation-window duration.
+    if (!hawkes_events.empty()) {
+        double t0 = hawkes_events.front().t;
+        for (auto& e : hawkes_events) e.t -= t0;
+    }
+
     double T = hawkes_events.back().t;
 
     double beta = beta_arg;

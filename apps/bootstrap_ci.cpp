@@ -21,10 +21,11 @@
 //                   events, which would destroy the very clustering we're
 //                   trying to measure the uncertainty of.
 //   hawkes_iters  : Adam iterations per bootstrap replicate's Hawkes refit
-//                   (default 1000 -- lower than calibrate_hawkes's default
-//                   since this runs many times; convergence per-replicate
-//                   is secondary to getting a percentile spread across
-//                   replicates that were all fit the same, consistent way).
+//                   (default 15000 -- the real Kraken point-estimate fit
+//                   needed ~11,400 iterations to actually converge after
+//                   the T-scaling fix, so a lower default would silently
+//                   repeat the same non-convergence problem across every
+//                   replicate).
 #include "backtest/data_feed.hpp"
 #include "backtest/order_book.hpp"
 #include "backtest/matching_engine.hpp"
@@ -96,7 +97,7 @@ int main(int argc, char** argv) {
     int n_boot             = argc > 2 ? std::atoi(argv[2]) : 1000;
     std::size_t ofi_block  = argc > 3 ? std::stoull(argv[3]) : 50;
     std::size_t n_blocks   = argc > 4 ? std::stoull(argv[4]) : 20;
-    int hawkes_iters       = argc > 5 ? std::atoi(argv[5]) : 1000;
+    int hawkes_iters       = argc > 5 ? std::atoi(argv[5]) : 15000;
 
     std::vector<MarketEvent> feed = load_csv_feed(csv);
     if (feed.empty()) { std::fprintf(stderr, "empty feed: %s\n", csv.c_str()); return 1; }
@@ -143,6 +144,15 @@ int main(int argc, char** argv) {
     if (hawkes_events.size() < 50) {
         std::fprintf(stderr, "too few aggressor events (%zu) to bootstrap Hawkes\n", hawkes_events.size());
         return 1;
+    }
+    // See calibrate_hawkes.cpp's identical fix for why this shift is
+    // necessary: real-data timestamps are raw Unix epoch nanoseconds, and
+    // using the last one directly as T inflates the compensator by ~10^5-10^6x,
+    // which was the real cause of the mu-collapse this project had been
+    // treating as a separate, unresolved identifiability issue.
+    if (!hawkes_events.empty()) {
+        double t0 = hawkes_events.front().t;
+        for (auto& e : hawkes_events) e.t -= t0;
     }
     double T = hawkes_events.back().t;
     double sum_dt = 0.0;
