@@ -3,11 +3,17 @@
 //   ./run_backtest [events] [strategy] [out_csv] [tape_csv] [tick_size] [qty_scale]
 //     events    : number of events for the synthetic generator (default
 //                 500000). Ignored if tape_csv is given.
-//     strategy  : "mm" (market maker, default), "mr" (mean reversion), or
-//                 "hawkes" (OFI + Hawkes-intensity-skewed MM; reads
-//                 hawkes_calibration.csv written by calibrate_hawkes if
-//                 present, else falls back to a data-scaled beta with
-//                 near-zero mu/alpha and a warning)
+//     strategy  : "mm" (market maker, default), "mr" (mean reversion),
+//                 "hawkes" (combined OFI+Hawkes signal, default weights
+//                 w_ofi=0.6/w_hawkes=0.4), "ofi_only" (w_ofi=1/w_hawkes=0,
+//                 ablation), or "hawkes_only" (w_ofi=0/w_hawkes=1,
+//                 ablation) -- the last two isolate each half of the fused
+//                 signal on the identical strategy skeleton/tape so their
+//                 individual contribution can be compared against the
+//                 combined signal and the "mm" baseline. hawkes/ofi_only/
+//                 hawkes_only all read hawkes_calibration.csv written by
+//                 calibrate_hawkes if present, else fall back to a
+//                 data-scaled beta with near-zero mu/alpha and a warning
 //     out_csv   : equity-curve output path (default equity_curve.csv)
 //     tape_csv  : optional real tape (schema: ts,type,side,price_ticks,qty,id).
 //                 If omitted, a synthetic tape is generated instead.
@@ -89,6 +95,7 @@ int main(int argc, char** argv) {
     std::string tape_csv = (argc > 4) ? argv[4] : "";
     double tick_size     = (argc > 5) ? std::stod(argv[5]) : 0.01;
     double qty_scale     = (argc > 6) ? std::stod(argv[6]) : 1.0;
+    std::size_t mark_every = (argc > 7) ? std::strtoull(argv[7], nullptr, 10) : 32;
 
     std::vector<MarketEvent> feed;
     if (!tape_csv.empty()) {
@@ -126,6 +133,7 @@ int main(int argc, char** argv) {
     cfg.enable_friction = true;
     cfg.tick_size = tick_size;
     cfg.qty_scale = qty_scale;
+    cfg.mark_every = mark_every;
     if (!tape_csv.empty()) {
         std::printf("Using tick_size=%.6g, qty_scale=%.6g for dollar accounting "
                     "-- MUST match whatever the converter used, or PnL/equity will be wrong.\n",
@@ -136,7 +144,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<Strategy> strategy;
     if (strat == "mr") {
         strategy = std::make_unique<MeanReversion>(50, 2.0, 100);
-    } else if (strat == "hawkes") {
+    } else if (strat == "hawkes" || strat == "hawkes_only" || strat == "ofi_only") {
         HawkesCalibration c;
         if (load_hawkes_calibration(c)) {
             std::printf("Loaded hawkes_calibration.csv (betas=[%.4g, %.4g, %.4g])\n",
@@ -149,6 +157,15 @@ int main(int argc, char** argv) {
         }
         HawkesOFIMarketMaker::Params p;
         p.quote_size = 50; p.base_half_spread = 1; p.max_inventory = 500;
+        // Ablation variants: isolate each half of the fused signal by
+        // zeroing the other's weight, so "hawkes vs. OFI vs. combined vs.
+        // baseline MM" can be compared on the identical tape/strategy
+        // skeleton -- the only thing that changes is which signal(s) drive
+        // the quote skew.
+        if (strat == "hawkes_only")      { p.w_ofi = 0.0; p.w_hawkes = 1.0; }
+        else if (strat == "ofi_only")    { p.w_ofi = 1.0; p.w_hawkes = 0.0; }
+        // else "hawkes": combined, uses Params' own defaults (w_ofi=0.6, w_hawkes=0.4)
+        std::printf("Signal weights: w_ofi=%.2f, w_hawkes=%.2f\n", p.w_ofi, p.w_hawkes);
         std::vector<std::vector<std::vector<double>>> beta_mat(
             2, std::vector<std::vector<double>>(2, c.betas));
         auto mm = std::make_unique<HawkesOFIMarketMaker>(p, beta_mat);
@@ -175,6 +192,13 @@ int main(int argc, char** argv) {
     std::printf("  Return            : %.4f%%\n",   rep.return_pct);
     std::printf("  Sharpe (per-step) : %.3f\n",     rep.sharpe);
     std::printf("  Max drawdown      : %.4f%%\n",   rep.max_drawdown * 100.0);
+    std::printf("  ---- PnL decomposition ----\n");
+    {
+        auto d = bt.portfolio().decomposition();
+        std::printf("  Directional PnL   : $%.2f  (holding/inventory: price moves x position held)\n", d.directional);
+        std::printf("  Spread PnL        : $%.2f  (edge captured: execution price vs. mid at fill)\n", d.spread);
+        std::printf("  Attribution resid.: $%.2f  (total - (directional+spread); see Portfolio::mark doc)\n", d.residual);
+    }
     std::printf("=================================================\n");
 
     std::ofstream out(out_csv);

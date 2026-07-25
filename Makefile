@@ -3,7 +3,7 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Iinclude -Istrategies
 TESTFLAGS := $(CXXFLAGS) -Itests
 
 BINDIR := bin
-APPS   := run_backtest benchmark validate_fidelity calibrate_hawkes
+APPS   := run_backtest benchmark validate_fidelity calibrate_hawkes bootstrap_ci
 TESTS  := test_order_book test_matching test_friction test_hawkes
 
 .PHONY: all apps tests check clean

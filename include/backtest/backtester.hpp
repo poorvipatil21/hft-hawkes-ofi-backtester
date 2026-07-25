@@ -151,8 +151,15 @@ private:
 
     void route_fill(const Fill& f) {
         if (!f.is_ours) return;
-        portfolio_.on_fill(f);
+        portfolio_.on_fill(f, current_mid());
         if (strat_) strat_->on_fill(f, *this);
+    }
+
+    double current_mid() const {
+        Price bb, ba; bool hb = book_.best_bid(bb), ha = book_.best_ask(ba);
+        return (hb && ha) ? (bb + ba) / 2.0 * cfg_.tick_size
+             : hb        ? bb * cfg_.tick_size
+             : ha        ? ba * cfg_.tick_size : 0.0;
     }
 
     Quantity opposite_visible(Side s) const {
@@ -161,10 +168,7 @@ private:
     }
 
     void mark_now(Timestamp ts) {
-        Price bb, ba; bool hb = book_.best_bid(bb), ha = book_.best_ask(ba);
-        double mid = (hb && ha) ? (bb + ba) / 2.0 * cfg_.tick_size
-                   : hb        ? bb * cfg_.tick_size
-                   : ha        ? ba * cfg_.tick_size : 0.0;
+        double mid = current_mid();
         if (mid > 0) portfolio_.mark(ts, mid);
     }
 

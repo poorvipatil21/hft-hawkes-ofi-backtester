@@ -27,7 +27,12 @@ public:
                         double qty_scale = 1.0)
         : cash_(starting_cash), start_(starting_cash), tick_(tick_size), qty_scale_(qty_scale) {}
 
-    void on_fill(const Fill& f) {
+    void on_fill(const Fill& f, double mid_at_fill = 0.0) {
+        // Advance directional PnL for the OLD position up to this fill's mid
+        // *before* applying the fill's position change -- see advance_pnl_clock's
+        // doc comment for why this must share one timeline with mark().
+        if (mid_at_fill > 0.0) advance_pnl_clock(mid_at_fill);
+
         const double px  = static_cast<double>(f.price) * tick_;
         const double sq  = (f.side == Side::Buy ? +1.0 : -1.0) * static_cast<double>(f.qty);
         const double pos = static_cast<double>(position_);
@@ -56,10 +61,31 @@ public:
         cash_     -= (sq / qty_scale_) * px;
         position_  = static_cast<Quantity>(std::llround(new_pos));
         ++fills_;
+
+        // PnL decomposition, part 1/2: spread-capture ("edge") PnL -- how
+        // favorable the execution price was relative to the prevailing mid
+        // at the moment of the fill, independent of any subsequent price
+        // movement. A market maker earning the spread should show positive
+        // spread_pnl_ regardless of which way the market later drifts; this
+        // is what lets us separate "the strategy is good at making markets"
+        // from "the strategy happened to be long/short when price moved,"
+        // the confound that flipped our own strategy-comparison's sign
+        // across different capture windows before this was added.
+        if (mid_at_fill > 0.0) {
+            double real_qty = static_cast<double>(f.qty) / qty_scale_;
+            double edge = (f.side == Side::Buy) ? (mid_at_fill - px) : (px - mid_at_fill);
+            spread_pnl_ += edge * real_qty;
+        }
+
+        // The NEW position starts accruing directional PnL from this fill's
+        // mid onward (ref_mid_ was just set to mid_at_fill by
+        // advance_pnl_clock above).
+        ref_position_ = position_;
     }
 
     // Mark to market and append a point to the equity curve.
     void mark(Timestamp ts, double mid_px) {
+        advance_pnl_clock(mid_px);
         last_mark_ = mid_px;
         curve_.push_back({ts, equity(mid_px)});
     }
@@ -80,7 +106,43 @@ public:
     std::size_t fills() const { return fills_; }
     const std::vector<EquityPoint>& curve() const { return curve_; }
 
+    // See the doc comments on on_fill/mark above for what each component
+    // means. The residual should now be at most floating-point-scale (both
+    // components share one reference-mid timeline via advance_pnl_clock),
+    // not a structural artifact of fill/mark timing.
+    struct PnLDecomposition {
+        double directional;   // holding/inventory PnL from price moves
+        double spread;        // spread-capture/edge PnL from execution quality
+        double total;         // == pnl(), for convenience
+        double residual;      // total - (directional + spread); should be ~0
+    };
+    PnLDecomposition decomposition() const {
+        double tot = pnl();
+        return PnLDecomposition{directional_pnl_, spread_pnl_, tot,
+                                 tot - (directional_pnl_ + spread_pnl_)};
+    }
+
 private:
+    // Advances the shared directional-PnL reference-mid timeline that both
+    // on_fill and mark() use. This MUST be the only place either component
+    // updates the "clock" -- an earlier version called this logic
+    // independently from on_fill and mark with their own separate mid
+    // references, which (because the engine's latency model processes a
+    // strategy's own resting-order fills at a different point in the event
+    // loop than periodic equity marks) could reference the book at two
+    // slightly different moments for what should have been the same
+    // instant, producing a persistent, non-shrinking residual that we
+    // initially (incorrectly) suspected was a mark-frequency artifact --
+    // it wasn't; running with marks after literally every event left the
+    // residual completely unchanged, which is what revealed the real cause.
+    void advance_pnl_clock(double new_mid) {
+        if (has_ref_) {
+            directional_pnl_ += (static_cast<double>(ref_position_) / qty_scale_) * (new_mid - ref_mid_);
+        }
+        ref_mid_ = new_mid;
+        has_ref_ = true;
+    }
+
     double      cash_, start_, tick_, qty_scale_;
     Quantity    position_  = 0;
     double      avg_px_    = 0.0;
@@ -88,6 +150,13 @@ private:
     double      realized_  = 0.0;
     std::size_t fills_     = 0;
     std::vector<EquityPoint> curve_;
+
+    // PnL decomposition state (single shared reference-mid timeline)
+    double      directional_pnl_ = 0.0;
+    double      spread_pnl_      = 0.0;
+    Quantity    ref_position_    = 0;
+    double      ref_mid_         = 0.0;
+    bool        has_ref_         = false;
 };
 
 } // namespace bt
