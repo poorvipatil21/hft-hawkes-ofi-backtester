@@ -4,7 +4,15 @@
 // forward mid-price returns -- the two empirical pillars of the ICAIF signal
 // section.
 //
-// Usage: ./bin/calibrate_hawkes [n_events] [seed] [beta] [csv_path] [max_iters] [lr]
+// EVERY RUN IS TIMESTAMPED, NOTHING GETS OVERWRITTEN:
+//   logs/calibrate_hawkes_<UTC-timestamp>.log        -- full console output
+//   hawkes_calibration_<UTC-timestamp>.csv           -- dated calibration params
+//   hawkes_calibration.csv                           -- ALSO updated (unchanged
+//                                                        name) so run_backtest's
+//                                                        default loader keeps
+//                                                        working without extra steps
+//
+// Usage: ./bin/calibrate_hawkes [n_events] [seed] [beta] [csv_path] [max_iters] [lr] [mu_reg]
 //   csv_path  : optional, load a real tape instead of the synthetic generator.
 //   beta      : <=0 auto-scales from data (1/mean inter-arrival). This is the
 //               *middle* of 3 fixed decay timescales (beta/10, beta, beta*10)
@@ -15,11 +23,8 @@
 //               the fitted alpha/mu.
 //   lr        : Adam learning rate in log-space (default 0.05).
 //   mu_reg    : ridge penalty strength anchoring mu toward its count/T
-//               estimate (default 1e-3). On long sessions mu can otherwise
-//               collapse toward 0 as the slowest kernel component absorbs
-//               its role (a near-collinearity issue) -- this keeps mu
-//               interpretable without materially changing the branching
-//               ratio. Set to 0 to disable (see raw, unregularized fit).
+//               estimate (default 0.5, applied as decoupled post-step
+//               shrinkage -- see hawkes.hpp). Set to 0 to disable.
 
 #include "backtest/data_feed.hpp"
 #include "backtest/order_book.hpp"
@@ -28,11 +33,40 @@
 #include "backtest/ofi.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <string>
 #include <cmath>
 #include <fstream>
+#include <ctime>
+#include <sys/stat.h>
 
 using namespace bt;
+
+// Returns a UTC timestamp string like "20260125T153045Z", safe for filenames.
+std::string utc_timestamp() {
+    std::time_t now = std::time(nullptr);
+    std::tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%dT%H%M%SZ", &tm_utc);
+    return std::string(buf);
+}
+
+// Prints to stdout AND appends to the run's log file, so every invocation's
+// full output is preserved under a unique, timestamped filename instead of
+// only living in a terminal scrollback that gets lost between runs -- this
+// matters once you're running many calibrations (e.g. one per Kraken
+// capture window) and want to compare/aggregate them later.
+static FILE* g_logfile = nullptr;
+void LOG(const char* fmt, ...) {
+    va_list args1, args2;
+    va_start(args1, fmt);
+    va_copy(args2, args1);
+    std::vprintf(fmt, args1);
+    if (g_logfile) std::vfprintf(g_logfile, fmt, args2);
+    va_end(args1);
+    va_end(args2);
+}
 
 // Replays a MarketEvent onto the book exactly as Backtester::apply_market_event
 // does internally (that method is private to Backtester, which also owns
@@ -70,6 +104,16 @@ int main(int argc, char** argv) {
     int max_iters      = argc > 5 ? std::atoi(argv[5]) : 2000;
     double lr          = argc > 6 ? std::stod(argv[6]) : 0.05;
     double mu_reg      = argc > 7 ? std::stod(argv[7]) : 0.5;
+
+    std::string ts = utc_timestamp();
+    mkdir("logs", 0755);  // no-op if it already exists
+    std::string log_path = "logs/calibrate_hawkes_" + ts + ".log";
+    g_logfile = std::fopen(log_path.c_str(), "w");
+
+    LOG("=== calibrate_hawkes run %s ===\n", ts.c_str());
+    LOG("args: n=%zu seed=%llu beta=%.6g csv=%s max_iters=%d lr=%.6g mu_reg=%.6g\n\n",
+        n, (unsigned long long)seed, beta_arg, csv.empty() ? "(synthetic)" : csv.c_str(),
+        max_iters, lr, mu_reg);
 
     std::vector<MarketEvent> feed = csv.empty() ? generate_synthetic_feed(n, seed)
                                                  : load_csv_feed(csv);
@@ -139,12 +183,14 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("== Tape ==\n");
-    std::printf("events            : %zu (%zu aggressor/Hawkes marks)\n", feed.size(), hawkes_events.size());
-    std::printf("OFI vs fwd-return (h=%d) corr : %.4f  (n=%zu)\n\n", horizon, corr, ofi_signal.size());
+    LOG("== Tape ==\n");
+    LOG("events            : %zu (%zu aggressor/Hawkes marks)\n", feed.size(), hawkes_events.size());
+    LOG("OFI vs fwd-return (h=%d) corr : %.4f  (n=%zu)\n\n", horizon, corr, ofi_signal.size());
 
     if (hawkes_events.size() < 50) {
         std::fprintf(stderr, "too few aggressor events to fit Hawkes\n");
+        LOG("too few aggressor events to fit Hawkes\n");
+        if (g_logfile) std::fclose(g_logfile);
         return 1;
     }
 
@@ -190,28 +236,30 @@ int main(int argc, char** argv) {
     MultivariateHawkes hp(2, beta_mat);
     auto fit = hp.fit_mle(hawkes_events, T, max_iters, lr, 1e-7, mu_reg);
 
-    std::printf("== Hawkes MLE (dims: 0=buy-MO, 1=sell-MO; betas=[%.4g, %.4g, %.4g] fixed) ==\n",
+    LOG("== Hawkes MLE (dims: 0=buy-MO, 1=sell-MO; betas=[%.4g, %.4g, %.4g] fixed) ==\n",
                 betas[0], betas[1], betas[2]);
-    std::printf("iterations        : %d / %d requested (converged=%d)%s\n",
+    LOG("iterations        : %d / %d requested (converged=%d)%s\n",
                 fit.iterations, max_iters, fit.converged,
                 fit.converged ? "" : "  <-- rerun with larger max_iters (arg 5) before trusting alpha/mu");
-    std::printf("log-likelihood    : %.3f\n", fit.final_ll);
-    std::printf("spectral radius   : %.4f  (<1 required for stationarity)\n", fit.spectral_radius);
-    std::printf("mu                : [%.6e, %.6e]\n", hp.mu()[0], hp.mu()[1]);
+    LOG("log-likelihood    : %.3f\n", fit.final_ll);
+    LOG("spectral radius   : %.4f  (<1 required for stationarity)\n", fit.spectral_radius);
+    LOG("mu                : [%.6e, %.6e]\n", hp.mu()[0], hp.mu()[1]);
     for (std::size_t i = 0; i < 2; ++i) {
         for (std::size_t j = 0; j < 2; ++j) {
-            std::printf("alpha[%zu][%zu] (fast,med,slow) : [%.6e, %.6e, %.6e]\n",
+            LOG("alpha[%zu][%zu] (fast,med,slow) : [%.6e, %.6e, %.6e]\n",
                         i, j, hp.alpha()[i][j][0], hp.alpha()[i][j][1], hp.alpha()[i][j][2]);
         }
     }
     auto n_mat = hp.branching_ratio();
-    std::printf("branching ratio n : [[%.4f, %.4f], [%.4f, %.4f]]\n",
+    LOG("branching ratio n : [[%.4f, %.4f], [%.4f, %.4f]]\n",
                  n_mat[0][0], n_mat[0][1], n_mat[1][0], n_mat[1][1]);
 
-    // Persist for run_backtest's "hawkes" strategy to pick up directly,
-    // instead of re-deriving/guessing params at backtest time.
-    {
-        std::ofstream calib("hawkes_calibration.csv");
+    // Persist calibration params two ways:
+    //   1. a timestamped, never-overwritten copy (history for Tier-1 multi-capture work)
+    //   2. the fixed "hawkes_calibration.csv" name (so run_backtest's default loader
+    //      keeps working without needing a filename argument every time)
+    auto write_calib = [&](const std::string& path) {
+        std::ofstream calib(path);
         calib << "beta0,beta1,beta2,mu0,mu1";
         for (std::size_t i = 0; i < 2; ++i)
             for (std::size_t j = 0; j < 2; ++j)
@@ -225,8 +273,12 @@ int main(int argc, char** argv) {
                 for (std::size_t p = 0; p < 3; ++p)
                     calib << ',' << hp.alpha()[i][j][p];
         calib << "\n";
-        std::printf("\nCalibration written to hawkes_calibration.csv\n");
-    }
+    };
+    std::string dated_calib_path = "hawkes_calibration_" + ts + ".csv";
+    write_calib(dated_calib_path);
+    write_calib("hawkes_calibration.csv");
+    LOG("\nCalibration written to %s (dated) and hawkes_calibration.csv (for run_backtest)\n",
+        dated_calib_path.c_str());
 
     // GOF: rescaled residuals should be ~Exp(1), i.e. mean~1, var~1.
     auto resid = hp.compensator_residuals(hawkes_events);
@@ -235,8 +287,11 @@ int main(int argc, char** argv) {
         if (r.size() < 5) continue;
         double m = 0; for (double x : r) m += x; m /= r.size();
         double v = 0; for (double x : r) v += (x - m) * (x - m); v /= (r.size() - 1);
-        std::printf("residual GOF mark %zu : n=%zu mean=%.4f var=%.4f  (target: 1.0, 1.0)\n",
+        LOG("residual GOF mark %zu : n=%zu mean=%.4f var=%.4f  (target: 1.0, 1.0)\n",
                      i, r.size(), m, v);
     }
+
+    LOG("\nFull log saved to %s\n", log_path.c_str());
+    if (g_logfile) std::fclose(g_logfile);
     return 0;
 }

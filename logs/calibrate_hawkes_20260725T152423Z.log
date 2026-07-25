@@ -1,0 +1,23 @@
+=== calibrate_hawkes run 20260725T152423Z ===
+args: n=0 seed=0 beta=-1 csv=data/btc_feed_300k.csv max_iters=20000 lr=0.05 mu_reg=0.5
+
+== Tape ==
+events            : 300000 (300000 aggressor/Hawkes marks)
+OFI vs fwd-return (h=20) corr : 0.0000  (n=0)
+
+== Hawkes MLE (dims: 0=buy-MO, 1=sell-MO; betas=[0.1028, 0.01028, 0.001028] fixed) ==
+iterations        : 3999 / 20000 requested (converged=1)
+log-likelihood    : -1126500.505
+spectral radius   : 0.7448  (<1 required for stationarity)
+mu                : [1.357622e-03, 1.408924e-03]
+alpha[0][0] (fast,med,slow) : [6.789263e-02, 2.365039e-04, 4.863568e-05]
+alpha[0][1] (fast,med,slow) : [7.119761e-04, 4.841303e-07, 4.168891e-06]
+alpha[1][0] (fast,med,slow) : [5.933195e-04, 5.073023e-07, 1.636547e-05]
+alpha[1][1] (fast,med,slow) : [6.929733e-02, 4.168125e-05, 5.073389e-05]
+branching ratio n : [[0.7309, 0.0110], [0.0217, 0.7276]]
+
+Calibration written to hawkes_calibration_20260725T152423Z.csv (dated) and hawkes_calibration.csv (for run_backtest)
+residual GOF mark 0 : n=145787 mean=1.0143 var=5.2265  (target: 1.0, 1.0)
+residual GOF mark 1 : n=154211 mean=1.0148 var=4.4531  (target: 1.0, 1.0)
+
+Full log saved to logs/calibrate_hawkes_20260725T152423Z.log

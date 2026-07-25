@@ -2,3 +2,5 @@ bin/
 build/
 *.o
 data/*.jsonl
+data/BTCUSDT-aggTrades-*.csv
+data/btc_feed*.csv
