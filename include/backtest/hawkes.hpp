@@ -28,6 +28,27 @@ struct HawkesEvent {
     std::size_t mark = 0;   // dimension index in [0, D)
 };
 
+// Shifts a sequence of events so the first event is at t=0, returning the
+// elapsed duration (the corrected T for the compensator). This is the
+// actual fix for the compensator time-scaling bug documented in the
+// project's writeup: real-data timestamps are raw Unix epoch values
+// (~1e18 ns), and using the last one directly as the compensator's
+// integration bound inflates the background-rate penalty by orders of
+// magnitude. Centralizing this here (rather than duplicating the shift
+// inline in each calling app, as an earlier version did) makes it directly
+// unit-testable -- see test_hawkes.cpp's regression test, which feeds
+// deliberately huge-epoch-style timestamps and asserts the recovered fit
+// is identical to the same events shifted to start near zero, i.e. that
+// the fit is invariant to an arbitrary additive offset in the input
+// timestamps, which it must be for T to be correctly computed as elapsed
+// duration rather than absolute time.
+inline double shift_to_relative_time(std::vector<HawkesEvent>& events) {
+    if (events.empty()) return 0.0;
+    double t0 = events.front().t;
+    for (auto& e : events) e.t -= t0;
+    return events.back().t;
+}
+
 class MultivariateHawkes {
 public:
     // beta[i][j] is a vector of P fixed decay rates for that (i,j) pair; all

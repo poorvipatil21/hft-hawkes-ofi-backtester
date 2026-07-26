@@ -149,12 +149,9 @@ int main(int argc, char** argv) {
     // necessary: real-data timestamps are raw Unix epoch nanoseconds, and
     // using the last one directly as T inflates the compensator by ~10^5-10^6x,
     // which was the real cause of the mu-collapse this project had been
-    // treating as a separate, unresolved identifiability issue.
-    if (!hawkes_events.empty()) {
-        double t0 = hawkes_events.front().t;
-        for (auto& e : hawkes_events) e.t -= t0;
-    }
-    double T = hawkes_events.back().t;
+    // treating as a separate, unresolved identifiability issue. (see
+    // hawkes.hpp's shift_to_relative_time and test_hawkes.cpp's regression test)
+    double T = shift_to_relative_time(hawkes_events);
     double sum_dt = 0.0;
     for (std::size_t k = 1; k < hawkes_events.size(); ++k) sum_dt += hawkes_events[k].t - hawkes_events[k - 1].t;
     double mean_dt = sum_dt / (hawkes_events.size() - 1);

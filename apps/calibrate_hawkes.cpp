@@ -205,12 +205,9 @@ int main(int argc, char** argv) {
     // "mu/slow-kernel identifiability" issue before finding this. Shifting
     // all event times so the first observed event is at t=0 fixes this:
     // T then correctly represents the elapsed observation-window duration.
-    if (!hawkes_events.empty()) {
-        double t0 = hawkes_events.front().t;
-        for (auto& e : hawkes_events) e.t -= t0;
-    }
-
-    double T = hawkes_events.back().t;
+    // (see hawkes.hpp's shift_to_relative_time doc comment and
+    // test_hawkes.cpp's regression test for this exact bug)
+    double T = shift_to_relative_time(hawkes_events);
 
     double beta = beta_arg;
     if (beta <= 0.0) {

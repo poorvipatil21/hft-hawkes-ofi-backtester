@@ -136,6 +136,58 @@ int main() {
         CHECK(inc > 0.0);
     }
 
+    // Regression test for the compensator time-scaling bug
+    // (Section on "compensator time-scaling error" in the writeup): the
+    // fit must be invariant to an arbitrary additive offset in event
+    // timestamps, since real captured data has raw Unix-epoch-scale
+    // timestamps (~1e18 ns) while T must reflect elapsed window duration,
+    // not absolute time. shift_to_relative_time is the fix; this test
+    // would have caught the original bug (using events.back().t directly
+    // as T, before any offset-removal) by failing on the huge-offset case.
+    {
+        std::vector<double> betas = {2.0, 2.0};
+        std::vector<std::vector<std::vector<double>>> bm = {
+            {{betas[0]}, {betas[1]}}, {{betas[1]}, {betas[0]}}
+        };
+        std::vector<HawkesEvent> events_near_zero = {
+            {0.5e9, 0}, {1.0e9, 1}, {1.2e9, 0}, {2.0e9, 0}, {2.3e9, 1}, {3.1e9, 1}, {4.0e9, 0}
+        };
+        // Same relative spacing (now in realistic nanosecond units, ~1s
+        // apart -- like real trade data), with a huge additive offset
+        // exactly matching what real epoch-nanosecond timestamps create
+        // (~1.78e18). At this magnitude, double's precision floor (ULP) is
+        // ~256ns, comfortably below our ~1e9ns (1s) spacing, so the shift
+        // correctly round-trips -- this is precisely why the original bug
+        // was invisible in practice: real trade spacings (seconds) are far
+        // above that floor, so nothing *looked* numerically broken.
+        const double HUGE_OFFSET = 1.78e18;
+        std::vector<HawkesEvent> events_huge_offset = events_near_zero;
+        for (auto& e : events_huge_offset) e.t += HUGE_OFFSET;
+
+        double T1 = shift_to_relative_time(events_near_zero);      // shifts by its own front (0.5) -> elapsed duration 3.5
+        double T2 = shift_to_relative_time(events_huge_offset);    // shifts by its own (huge) front -> must recover the same 3.5
+
+        CHECK_NEAR(T1, T2, 1e-6);
+        // And the shifted event times themselves must match exactly (not
+        // just T) -- this is what guarantees the recursive intensity
+        // updates (which depend on inter-event dt, computed from these
+        // shifted times) are identical regardless of the input's absolute
+        // time offset.
+        for (std::size_t i = 0; i < events_near_zero.size(); ++i)
+            CHECK_NEAR(events_near_zero[i].t, events_huge_offset[i].t, 1e-6);
+
+        // Fit both (near-zero already effectively "shifted") and confirm
+        // identical branching ratio -- the actual end-to-end guarantee.
+        MultivariateHawkes hp1(2, bm);
+        hp1.fit_mle(events_near_zero, T1, 500, 0.05, 1e-7, 0.5);
+        MultivariateHawkes hp2(2, bm);
+        hp2.fit_mle(events_huge_offset, T2, 500, 0.05, 1e-7, 0.5);
+        auto n1 = hp1.branching_ratio(), n2 = hp2.branching_ratio();
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                CHECK_NEAR(n1[i][j], n2[i][j], 1e-9);
+    }
+
     test::report_and_reset("hawkes_ofi");
     return test::failures() == 0 ? 0 : 1;
 }

@@ -57,6 +57,33 @@ int main() {
         CHECK_NEAR(pf.realized(), 50.0, 1e-6);
     }
 
+    // Regression test for the quantity-scale PnL accounting error
+    // (Section on "quantity-scale PnL accounting error" in the writeup):
+    // scaling both the fill quantity and qty_scale by the same factor must
+    // produce identical real-unit dollar PnL, since qty_scale exists
+    // precisely to represent "this many integer units equal one real
+    // share/coin." Before the fix, Portfolio had no qty_scale parameter at
+    // all and treated every integer unit as one whole share, so this test
+    // would have failed (PnL would have scaled with the raw integer qty
+    // instead of staying invariant).
+    {
+        // Baseline: qty_scale=1 (units ARE whole shares), buy 100 @ 99, mark @ 105.
+        Portfolio pf_base(1'000'000.0, 1.0, /*qty_scale=*/1.0);
+        pf_base.on_fill(Fill{1, Side::Buy, 99, 100, 0, true, false}, /*mid_at_fill=*/100.0);
+        pf_base.mark(1, 105.0);
+
+        // Same real trade (100 whole units), but represented as 100 * 1e6
+        // integer "micro-units" with qty_scale=1e6 -- as real converters do
+        // for fractional-crypto-quantity data.
+        Portfolio pf_scaled(1'000'000.0, 1.0, /*qty_scale=*/1e6);
+        pf_scaled.on_fill(Fill{1, Side::Buy, 99, 100 * 1'000'000, 0, true, false}, 100.0);
+        pf_scaled.mark(1, 105.0);
+
+        CHECK_NEAR(pf_base.pnl(), pf_scaled.pnl(), 1e-6);
+        CHECK_NEAR(pf_base.decomposition().directional, pf_scaled.decomposition().directional, 1e-6);
+        CHECK_NEAR(pf_base.decomposition().spread, pf_scaled.decomposition().spread, 1e-6);
+    }
+
     test::report_and_reset("friction_portfolio");
     return test::failures() == 0 ? 0 : 1;
 }
