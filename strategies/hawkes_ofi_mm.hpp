@@ -65,8 +65,20 @@ public:
                 lam_sell += hawkes_.alpha()[1][j][p] * R_[1][j][p];
             }
         }
+        // NOTE: this threshold must be tiny relative to the *rate* scale of
+        // mu/alpha, not a fixed absolute value -- an earlier version used
+        // 1e-9 here, chosen when mu lived in the 1e-4-1e-1 range (before
+        // the compensator time-scaling fix elsewhere in this project). On
+        // corrected, real-data-scale mu (~1e-11), mu alone is already below
+        // that threshold before any alpha contribution, silently forcing
+        // intensity_imbalance to 0 on every call and making the Hawkes
+        // signal path completely inert -- verified directly: an ablation
+        // run with w_hawkes=1 produced byte-identical results to a
+        // zero-signal control until this was fixed. This is only a
+        // divide-by-zero guard, not a "is the signal meaningful" gate, so
+        // it should be near machine epsilon, not a scale-dependent constant.
         double denom = lam_buy + lam_sell;
-        double intensity_imbalance = denom > 1e-9 ? (lam_buy - lam_sell) / denom : 0.0;
+        double intensity_imbalance = denom > 1e-300 ? (lam_buy - lam_sell) / denom : 0.0;
         double ofi_norm = ofi_.normalized(p_.ofi_scale);
         ofi_norm = std::clamp(ofi_norm, -1.0, 1.0);
 

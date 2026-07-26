@@ -75,7 +75,15 @@ public:
             double real_qty = static_cast<double>(f.qty) / qty_scale_;
             double edge = (f.side == Side::Buy) ? (mid_at_fill - px) : (px - mid_at_fill);
             spread_pnl_ += edge * real_qty;
+            ++edge_tracked_count_;
+            if (edge > 0.0) ++edge_positive_count_;
         }
+
+        // Turnover: cumulative traded notional (real units x execution
+        // price), independent of direction -- a standard measure of how
+        // much trading activity a strategy generates relative to its
+        // capital base, reported as a multiple of starting equity.
+        traded_notional_ += (static_cast<double>(f.qty) / qty_scale_) * px;
 
         // The NEW position starts accruing directional PnL from this fill's
         // mid onward (ref_mid_ was just set to mid_at_fill by
@@ -122,6 +130,21 @@ public:
                                  tot - (directional_pnl_ + spread_pnl_)};
     }
 
+    // Turnover as a multiple of starting equity (traded notional / starting
+    // capital) -- a standard activity-normalized measure, comparable across
+    // strategies with different capital bases.
+    double turnover() const { return start_ > 1e-9 ? traded_notional_ / start_ : 0.0; }
+
+    // Fraction of fills whose execution price was favorable relative to the
+    // prevailing mid at the moment of the fill (i.e. positive spread-capture
+    // edge on that individual fill) -- an execution-quality "hit rate"
+    // distinct from a directional win-rate, since it's evaluated per-fill
+    // against the contemporaneous mid, not against any later price.
+    double hit_rate() const {
+        return edge_tracked_count_ > 0
+             ? static_cast<double>(edge_positive_count_) / edge_tracked_count_ : 0.0;
+    }
+
 private:
     // Advances the shared directional-PnL reference-mid timeline that both
     // on_fill and mark() use. This MUST be the only place either component
@@ -157,6 +180,11 @@ private:
     Quantity    ref_position_    = 0;
     double      ref_mid_         = 0.0;
     bool        has_ref_         = false;
+
+    // Turnover and hit-rate tracking
+    double      traded_notional_     = 0.0;
+    std::size_t edge_tracked_count_  = 0;
+    std::size_t edge_positive_count_ = 0;
 };
 
 } // namespace bt

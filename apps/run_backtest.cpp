@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<Strategy> strategy;
     if (strat == "mr") {
         strategy = std::make_unique<MeanReversion>(50, 2.0, 100);
-    } else if (strat == "hawkes" || strat == "hawkes_only" || strat == "ofi_only") {
+    } else if (strat == "hawkes" || strat == "hawkes_only" || strat == "ofi_only" || strat == "matched_baseline") {
         HawkesCalibration c;
         if (load_hawkes_calibration(c)) {
             std::printf("Loaded hawkes_calibration.csv (betas=[%.4g, %.4g, %.4g])\n",
@@ -162,8 +162,19 @@ int main(int argc, char** argv) {
         // baseline MM" can be compared on the identical tape/strategy
         // skeleton -- the only thing that changes is which signal(s) drive
         // the quote skew.
-        if (strat == "hawkes_only")      { p.w_ofi = 0.0; p.w_hawkes = 1.0; }
-        else if (strat == "ofi_only")    { p.w_ofi = 1.0; p.w_hawkes = 0.0; }
+        //
+        // "matched_baseline" additionally zeros BOTH weights: same requote
+        // cadence, unwind-on-cap logic, quote size, and spread as the
+        // signal-conditioned variants, with zero signal-driven skew (only
+        // the inventory-mean-reversion term remains active). Unlike "mm"
+        // (a structurally different, much less active strategy at ~4K
+        // fills vs. ~400K), this is the apples-to-apples comparison:
+        // matched activity level, isolating whether spread-capture
+        // differences come from the signal itself rather than merely from
+        // trading more/differently at the same cadence.
+        if (strat == "hawkes_only")           { p.w_ofi = 0.0; p.w_hawkes = 1.0; }
+        else if (strat == "ofi_only")         { p.w_ofi = 1.0; p.w_hawkes = 0.0; }
+        else if (strat == "matched_baseline") { p.w_ofi = 0.0; p.w_hawkes = 0.0; }
         // else "hawkes": combined, uses Params' own defaults (w_ofi=0.6, w_hawkes=0.4)
         std::printf("Signal weights: w_ofi=%.2f, w_hawkes=%.2f\n", p.w_ofi, p.w_hawkes);
         std::vector<std::vector<std::vector<double>>> beta_mat(
@@ -191,7 +202,10 @@ int main(int argc, char** argv) {
     std::printf("  Total PnL         : $%.2f\n",    rep.total_pnl);
     std::printf("  Return            : %.4f%%\n",   rep.return_pct);
     std::printf("  Sharpe (per-step) : %.3f\n",     rep.sharpe);
+    std::printf("  Sortino (per-step): %.3f\n",     rep.sortino);
     std::printf("  Max drawdown      : %.4f%%\n",   rep.max_drawdown * 100.0);
+    std::printf("  Turnover          : %.2fx starting equity\n", rep.turnover);
+    std::printf("  Hit rate          : %.2f%%  (fills with favorable edge vs. mid at fill)\n", rep.hit_rate * 100.0);
     std::printf("  ---- PnL decomposition ----\n");
     {
         auto d = bt.portfolio().decomposition();

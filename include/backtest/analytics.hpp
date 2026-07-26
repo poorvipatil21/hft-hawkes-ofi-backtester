@@ -11,7 +11,10 @@ struct BacktestReport {
     double      total_pnl     = 0.0;
     double      return_pct    = 0.0;
     double      sharpe        = 0.0;   // per-step, sqrt(N)-scaled
+    double      sortino       = 0.0;   // per-step, downside-deviation-scaled
     double      max_drawdown  = 0.0;   // as a positive fraction
+    double      turnover      = 0.0;   // traded notional / starting equity
+    double      hit_rate      = 0.0;   // fraction of fills with positive edge vs. mid
     std::size_t fills         = 0;
     std::size_t events        = 0;
     Quantity    end_position  = 0;
@@ -33,6 +36,29 @@ inline double sharpe_ratio(const std::vector<EquityPoint>& c) {
     return sd > 1e-12 ? (mean / sd) * std::sqrt(static_cast<double>(r.size())) : 0.0;
 }
 
+// Like sharpe_ratio, but normalizes by downside deviation (std of negative
+// per-step returns only) instead of full standard deviation -- a strategy
+// with the same mean return but its variance concentrated on the upside
+// gets a higher Sortino than Sharpe, which is arguably the more relevant
+// risk-adjusted metric for a market maker where large favorable moves
+// aren't the risk being managed against, only large adverse ones are.
+inline double sortino_ratio(const std::vector<EquityPoint>& c) {
+    if (c.size() < 3) return 0.0;
+    std::vector<double> r;
+    r.reserve(c.size());
+    for (std::size_t i = 1; i < c.size(); ++i) {
+        double prev = c[i - 1].equity;
+        if (std::abs(prev) > 1e-9) r.push_back((c[i].equity - prev) / prev);
+    }
+    if (r.size() < 2) return 0.0;
+    double mean = 0.0; for (double x : r) mean += x; mean /= r.size();
+    double downside_ss = 0.0; std::size_t n_down = 0;
+    for (double x : r) if (x < 0.0) { downside_ss += x * x; ++n_down; }
+    if (n_down < 2) return 0.0;   // not enough downside observations to estimate
+    double downside_dev = std::sqrt(downside_ss / n_down);
+    return downside_dev > 1e-12 ? (mean / downside_dev) * std::sqrt(static_cast<double>(r.size())) : 0.0;
+}
+
 // Largest peak-to-trough decline of the equity curve, as a positive fraction.
 inline double max_drawdown(const std::vector<EquityPoint>& c) {
     double peak = -1e300, mdd = 0.0;
@@ -51,7 +77,10 @@ inline BacktestReport summarize(const Portfolio& pf, std::size_t events) {
     rep.total_pnl     = pf.pnl();
     rep.return_pct    = start_eq > 1e-9 ? 100.0 * rep.total_pnl / start_eq : 0.0;
     rep.sharpe        = sharpe_ratio(c);
+    rep.sortino       = sortino_ratio(c);
     rep.max_drawdown  = max_drawdown(c);
+    rep.turnover      = pf.turnover();
+    rep.hit_rate      = pf.hit_rate();
     rep.fills         = pf.fills();
     rep.events        = events;
     rep.end_position  = pf.position();
