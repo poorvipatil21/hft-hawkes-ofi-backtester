@@ -251,6 +251,38 @@ int main(int argc, char** argv) {
     LOG("branching ratio n : [[%.4f, %.4f], [%.4f, %.4f]]\n",
                  n_mat[0][0], n_mat[0][1], n_mat[1][0], n_mat[1][1]);
 
+    // Diagnostic for a specific, confirmed failure mode: on weak-signal or
+    // low-event-count real data, the optimizer can satisfy its convergence
+    // tolerance at a degenerate, near-uniform branching ratio matrix that
+    // does not reflect genuine market structure (verified: two different
+    // real instruments produced the exact same branching ratio to 4
+    // decimal places; reproduced on synthetic data with a known
+    // non-degenerate ground truth). A "patience" fix (requiring the
+    // tolerance condition for many consecutive iterations, not just one)
+    // only partially mitigates this -- a controlled sweep found the
+    // plateau region can span thousands of iterations, wider than is
+    // practical to require by default. This check doesn't depend on
+    // guessing a large-enough patience value: it looks directly at
+    // whether the four matrix entries are suspiciously close together
+    // relative to what real, differentiated market structure looks like.
+    {
+        double vals[4] = {n_mat[0][0], n_mat[0][1], n_mat[1][0], n_mat[1][1]};
+        double mean = (vals[0]+vals[1]+vals[2]+vals[3]) / 4.0;
+        double var = 0.0; for (double v : vals) var += (v-mean)*(v-mean); var /= 4.0;
+        double sd = std::sqrt(var);
+        if (sd < 0.02 && mean > 0.05) {
+            LOG("\n*** WARNING: branching ratio matrix entries are suspiciously "
+                "uniform (std=%.5f across the 4 entries). ***\n", sd);
+            LOG("*** This matches a confirmed degenerate-convergence failure mode: "
+                "the optimizer can satisfy its tolerance at a data-independent "
+                "plateau rather than genuine convergence, especially on data with "
+                "few aggressor events (this run: %zu marks). ***\n", hawkes_events.size());
+            LOG("*** DO NOT trust this branching ratio without further scrutiny -- "
+                "try a much larger --max-iters (e.g. 100000+), or treat this "
+                "window as excluded from headline results pending investigation. ***\n\n");
+        }
+    }
+
     // Persist calibration params two ways:
     //   1. a timestamped, never-overwritten copy (history for Tier-1 multi-capture work)
     //   2. the fixed "hawkes_calibration.csv" name (so run_backtest's default loader
