@@ -4,3 +4,12 @@ build/
 data/*.jsonl
 data/BTCUSDT-aggTrades-*.csv
 data/btc_feed*.csv
+logs/
+hawkes_calibration_*.csv
+data/binance_days/
+data/*_converted.csv
+data/*_feed*.csv
+data/*summary*.csv
+data/bitmex_feed*.csv
+data/eth_feed*.csv
+data/sol_feed*.csv
