@@ -42,6 +42,7 @@ CONVERTING THE CAPTURE
     (cancel-old + add-new) on every update -- ask for that once you've
     got a capture you're happy with.
 """
+import argparse
 import asyncio
 import json
 import time
@@ -56,17 +57,23 @@ except ImportError:
     )
 
 # ----------------------------------------------------------------------
-# CONFIG -- pick ONE duration block below (comment out the other).
+# CONFIG -- these are defaults, all overridable via CLI args (see below),
+# which is what capture_loop.py uses to run many independent windows
+# without editing this file each time. Running this script directly with
+# no args still works exactly as before (3-minute trial capture).
 # ----------------------------------------------------------------------
-SYMBOL = "BTC/USD"           # Kraken's v2 symbol format, e.g. "BTC/USD", "ETH/USD"
-DEPTH = 25                    # book depth: 10, 25, 100, 500, or 1000
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--symbol", default="BTC/USD", help='Kraken v2 symbol, e.g. "BTC/USD"')
+_ap.add_argument("--depth", type=int, default=25, choices=[10, 25, 100, 500, 1000])
+_ap.add_argument("--duration", type=float, default=180,
+                  help="capture duration in seconds (default 180 = 3 min trial)")
+_ap.add_argument("--out-dir", default="data", help="output directory (default: data)")
+_args, _unknown = _ap.parse_known_args()
 
-# --- TRIAL CAPTURE (active by default): a few minutes, for a first test ---
-DURATION_SECONDS = 180        # 3 minutes
-
-# --- LONG CAPTURE (uncomment when ready, comment out the block above) ---
-# DURATION_SECONDS = 6 * 3600   # 6 hours
-# DURATION_SECONDS = 24 * 3600  # a full day, if you want to leave it overnight
+SYMBOL = _args.symbol
+DEPTH = _args.depth
+DURATION_SECONDS = _args.duration
+OUT_DIR = _args.out_dir
 
 # ----------------------------------------------------------------------
 
@@ -163,8 +170,9 @@ async def capture(out_path: str, duration_s: int):
 
 if __name__ == "__main__":
     import os
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_symbol = SYMBOL.replace("/", "").lower()
-    out_path = f"data/kraken_ws_capture_{safe_symbol}_{ts_tag}.jsonl"
+    out_path = f"{OUT_DIR}/kraken_ws_capture_{safe_symbol}_{ts_tag}.jsonl"
+    print(f"Duration: {DURATION_SECONDS}s ({DURATION_SECONDS/3600:.2f} hours), symbol={SYMBOL}, depth={DEPTH}")
     asyncio.run(capture(out_path, DURATION_SECONDS))

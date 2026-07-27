@@ -23,12 +23,16 @@ want true L3 (this project's Hawkes calibration only needs the trade
 stream, not book granularity, so it's unaffected either way).
 
 TIMESTAMPS
-Uses each message's local receive time (recv_ts_ns, written by the
-capture script) rather than Kraken's own embedded timestamp: this
-reflects the actual arrival-time process a live strategy would see,
-which is what both the Hawkes calibration and OFI/return analysis care
-about, and sidesteps parsing/format differences in Kraken's timestamp
-field entirely.
+Book/depth rows use each message's local receive time (recv_ts_ns,
+written by the capture script) -- reflects the actual arrival-time
+process a live strategy would see for OFI purposes.
+
+Trade rows use Kraken's OWN per-trade timestamp instead (see
+kraken_trade_timestamp_to_ns and the comment at its call site for why):
+recv_ts_ns is shared across every trade in a batched WS message, which
+produces duplicate (dt=0) timestamps between consecutive Hawkes events
+whenever Kraken delivers multiple fills together -- a real bug found via
+a live ETH/USD capture, not a hypothetical one.
 
 Usage:
     python scripts/kraken_ws_to_csv.py \
@@ -43,6 +47,22 @@ import argparse
 import csv
 import json
 import sys
+from datetime import datetime, timezone
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def kraken_trade_timestamp_to_ns(ts_str: str) -> int:
+    """Parses Kraken's per-trade ISO8601 timestamp (e.g.
+    '2026-07-26T05:51:56.292057Z', microsecond precision) into integer
+    nanoseconds since epoch, using exact integer arithmetic throughout
+    (never a float multiply-by-1e9) specifically to avoid reintroducing a
+    precision-loss bug of the kind this project has already hit once
+    (see the compensator time-scaling bug writeup) while fixing this one."""
+    dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    delta = dt - _EPOCH
+    total_microseconds = delta.days * 86400 * 1_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    return total_microseconds * 1000  # exact int -> nanoseconds
 
 
 def convert(in_path: str, out_path: str, tick_size: float, qty_scale: float):
@@ -147,11 +167,44 @@ def convert(in_path: str, out_path: str, tick_size: float, qty_scale: float):
                         n_malformed += 1
                         continue
 
+                    # Use Kraken's own per-trade timestamp, NOT recv_ts_ns, for
+                    # trade rows specifically. Bug found via real data: when
+                    # Kraken batches multiple trade fills into one WS message
+                    # (e.g. one aggressive order sweeping several price
+                    # levels), every trade in that batch shares the same
+                    # recv_ts_ns (it's the time OUR process received the
+                    # message, not when each individual trade occurred). That
+                    # gives dt=0 between "consecutive" Hawkes events, so the
+                    # kernel's exp(-beta*dt) term equals 1 (no decay at all)
+                    # -- spuriously injecting "infinite instantaneous
+                    # clustering" into the likelihood. This was invisible
+                    # until a real ETH/USD capture showed 27% of its trades
+                    # sharing an exact duplicate timestamp with another trade
+                    # (one timestamp had 31 trades stacked on it), and the
+                    # resulting fit converged to a suspicious, exactly
+                    # identical degenerate branching ratio (0.3698) on two
+                    # entirely different instruments (ETH and SOL) -- the
+                    # tell that something mechanical, not real market
+                    # structure, was driving the result. Kraken's own
+                    # "timestamp" field has genuine microsecond-level
+                    # per-trade granularity; we parse it with exact integer
+                    # arithmetic (no float multiplication) to avoid
+                    # reintroducing a precision-loss bug of our own while
+                    # fixing this one.
+                    ts_field = entry.get("timestamp")
+                    if ts_field:
+                        try:
+                            ts_ns = kraken_trade_timestamp_to_ns(ts_field)
+                        except (ValueError, TypeError):
+                            ts_ns = recv_ts_ns  # malformed timestamp string -- fall back rather than crash
+                    else:
+                        ts_ns = recv_ts_ns  # older captures / missing field -- fall back, not silently wrong
+
                     price_ticks = round(price / tick_size)
                     qty_scaled = round(qty * qty_scale)
                     if qty_scaled <= 0:
                         continue
-                    writer.writerow([recv_ts_ns, "trade", side, price_ticks, qty_scaled, trade_id])
+                    writer.writerow([ts_ns, "trade", side, price_ticks, qty_scaled, trade_id])
                     n_trade += 1
 
             else:
